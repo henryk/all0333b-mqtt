@@ -1,0 +1,11 @@
+[Unit]
+Description=ALL0333B connection stats MQTT sensor
+
+[Service]
+ExecStart=/usr/bin/python3 all0333b-mqtt.py
+WorkingDirectory=%h/all0333b-mqtt
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

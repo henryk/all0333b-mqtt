@@ -1,0 +1,12 @@
+#mqtt:
+#  discovery_prefix: homeassistant
+#  broker: 127.0.0.1
+#  password: ""
+#  username: homeassistant
+#all0333b:
+#  host: 172.16.1.254
+#  port: 23
+#  username: root
+#  password: admin
+
+name: 'DSL Upstream'
