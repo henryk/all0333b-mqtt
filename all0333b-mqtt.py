@@ -1,6 +1,41 @@
 from paho.mqtt.client import Client
-import json, time, yaml, re, threading, telnetlib
+import json, time, yaml, re, threading, telnetlib, traceback
 
+# Source: https://svn.dd-wrt.com//browser/src/linux/universal/linux-3.2/drivers/net/ethernet/ifxatm/include/drv_dsl_cpe_api.h?rev=18222
+LINE_STATES = {
+    0x00000000: "NOT_INITIALIZED",
+    0x00000001: "EXCEPTION",
+    0x00000010: "NOT_UPDATED",
+    0x000000FF: "IDLE_REQUEST",
+    0x00000100: "IDLE",
+    0x000001FF: "SILENT_REQUEST",
+    0x00000200: "SILENT",
+    0x00000300: "HANDSHAKE",
+    0x00000310: "BONDING_CLR",
+    0x00000380: "FULL_INIT",
+    0x000003C0: "SHORT_INIT_ENTRY",
+    0x00000400: "DISCOVERY",
+    0x00000500: "TRAINING",
+    0x00000600: "ANALYSIS",
+    0x00000700: "EXCHANGE",
+    0x00000800: "SHOWTIME_NO_SYNC",
+    0x00000801: "SHOWTIME_TC_SYNC",
+    0x00000900: "FASTRETRAIN",
+    0x00000A00: "LOWPOWER_L2",
+    0x00000B00: "LOOPDIAGNOSTIC_ACTIVE",
+    0x00000B10: "LOOPDIAGNOSTIC_DATA_EXCHANGE",
+    0x00000B20: "LOOPDIAGNOSTIC_DATA_REQUEST",
+    0x00000C00: "LOOPDIAGNOSTIC_COMPLETE",
+    0x00000D00: "RESYNC",
+    0x01000000: "TEST",
+    0x01000001: "TEST_LOOP",
+    0x01000010: "TEST_REVERB",
+    0x01000020: "TEST_MEDLEY",
+    0x01000030: "TEST_SHOWTIME_LOCK",
+    0x01000040: "TEST_QUIET",
+    0x02000000: "LOWPOWER_L3",
+    0x03000000: "UNKNOWN",
+}
 
 
 class All0333bMqtt:
@@ -43,6 +78,7 @@ class All0333bMqtt:
         self.connection = None
         self.mqttc = None
         self.state = {}
+        self.state_lock = threading.Lock()
         self.disc_config = {}
         self.alive = True
         self.alive_condition = threading.Condition()
@@ -97,7 +133,10 @@ class All0333bMqtt:
         try:
             while True:
                 t = telnetlib.Telnet(self.config['all0333b']['host'], self.config['all0333b']['port'])
+                #t.set_debuglevel(5)
                 self.handle_connection(t)
+        except:
+            traceback.print_exc()
         finally:
             self.alive = False
             with self.alive_condition:
@@ -119,7 +158,9 @@ class All0333bMqtt:
 
             while True:
                 self.query_ifconfig(tn)
-                self.update_sensor()
+                self.query_line_state(tn)
+                with self.state_lock:
+                    self.update_sensor()
 
                 time.sleep(self.config['sensor']['update_interval'])
 
@@ -127,6 +168,26 @@ class All0333bMqtt:
         data = tn.read_until(b'# ')
         self.alive = True
         return data
+
+    def exec_command(self, tn, command):
+        tn.read_very_eager()
+        tn.write(command)
+        tn.read_very_eager()
+        tn.write(b"\n")
+        return self.wait_for_prompt(tn)
+
+    def call_dsl_cpe_pipe(self, tn, command, *args):
+        command = ['dsl_cpe_pipe.sh', command] + list(map(str, args))
+
+        data = self.exec_command(tn, " ".join(command).encode())
+        last_line = [l for l in data.strip().splitlines() if b'=' in l][-1].decode()
+
+        return dict(e.split("=", 1) for e in last_line.split())
+
+    def query_line_state(self, tn):
+        d = self.call_dsl_cpe_pipe(tn, "lsg")
+
+        self.state['state'] = LINE_STATES.get(int(d['nLineState'], 0), 'UNKNOWN')
 
     def query_ifconfig(self, tn):
         tn.read_very_eager()
@@ -136,13 +197,8 @@ class All0333bMqtt:
         now = time.time()
         data = self.wait_for_prompt(tn)
         have_interface = False
-        next_line = False
 
         for line in data.splitlines():
-            if next_line:
-                next_line = False
-                self.state['state'] = line.strip().split()[0].decode()
-
             if have_interface and line.strip().startswith(b'RX bytes'):
                 have_interface = False
                 parts = line.strip().split()
@@ -151,7 +207,6 @@ class All0333bMqtt:
 
             if line.startswith(b'nas0'):
                 have_interface = True
-                next_line = True
 
     def update_rate(self, name, ts, value):
         r = self.rates.setdefault(name, {'ts': ts, 'lv': value, 'rate': None})
